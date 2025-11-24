@@ -29,14 +29,22 @@ export class EDAAppStack extends cdk.Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       partitionKey: { name: "name", type: dynamodb.AttributeType.STRING },
       removalPolicy: cdk.RemovalPolicy.DESTROY,
-      tableName: "Imagess",
+      tableName: "Images",
  });
 
 
      // Integration infrastructure
 
+     const dlq = new sqs.Queue(this, "img-dlq", {
+      receiveMessageWaitTime: cdk.Duration.seconds(10),
+ });
+
       const imageProcessQueue = new sqs.Queue(this, "img-process-q", {
       receiveMessageWaitTime: cdk.Duration.seconds(10),
+      deadLetterQueue: {
+        queue: dlq,
+        maxReceiveCount: 1
+ }
     });
 
         const mailerQ = new sqs.Queue(this, "mailer-q", {
@@ -72,6 +80,18 @@ export class EDAAppStack extends cdk.Stack {
       entry: `${__dirname}/../lambdas/mailer.ts`,
     });
 
+    const rejectedImageFn = new lambdanode.NodejsFunction(
+  this,
+  "RejectedImagesFn",
+  {
+    runtime: lambda.Runtime.NODEJS_20_X,
+    entry: `${__dirname}/../lambdas/rejectedImages.ts`,
+    timeout: cdk.Duration.seconds(15),
+    memorySize: 128,
+  }
+);
+
+
 
     // S3 --> SQS
      imagesBucket.addEventNotification(
@@ -102,9 +122,15 @@ export class EDAAppStack extends cdk.Stack {
 
     mailerFn.addEventSource(newImageMailEventSource);
 
+    const rejectedImageEventSource = new events.SqsEventSource(dlq, {
+  batchSize: 5,
+  maxBatchingWindow: cdk.Duration.seconds(10),
+});
+
+rejectedImageFn.addEventSource(rejectedImageEventSource);
 
     // Permissions
-
+    imagesBucket.grantRead(processImageFn);
     imagesTable.grantReadWriteData(processImageFn);
 
       mailerFn.addToRolePolicy(
