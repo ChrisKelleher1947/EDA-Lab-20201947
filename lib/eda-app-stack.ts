@@ -9,6 +9,7 @@ import * as sns from "aws-cdk-lib/aws-sns";
 import * as subs from "aws-cdk-lib/aws-sns-subscriptions";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+import * as source from "aws-cdk-lib/aws-lambda-event-sources";
 
 
 import { Construct } from "constructs";
@@ -25,12 +26,13 @@ export class EDAAppStack extends cdk.Stack {
     });
 
     // DB Table
-        const imagesTable = new dynamodb.Table(this, "ImagesTable", {
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      partitionKey: { name: "name", type: dynamodb.AttributeType.STRING },
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      tableName: "Images",
- });
+      const imagesTable = new dynamodb.Table(this, "ImagesTable", {
+  billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+  partitionKey: { name: "name", type: dynamodb.AttributeType.STRING },
+  removalPolicy: cdk.RemovalPolicy.DESTROY,
+  tableName: "ImagesTable",
+  stream: dynamodb.StreamViewType.NEW_IMAGE 
+});
 
 
      // Integration infrastructure
@@ -45,10 +47,6 @@ export class EDAAppStack extends cdk.Stack {
         queue: dlq,
         maxReceiveCount: 1
  }
-    });
-
-        const mailerQ = new sqs.Queue(this, "mailer-q", {
-      receiveMessageWaitTime: cdk.Duration.seconds(10),
     });
 
         const newImageTopic = new sns.Topic(this, "NewImageTopic", {
@@ -132,24 +130,7 @@ export class EDAAppStack extends cdk.Stack {
       })
  );
 
-          newImageTopic.addSubscription(
-      new subs.SqsSubscription(mailerQ, {
-        filterPolicyWithMessageBody: {
-          Records: sns.FilterOrPolicy.policy({
-            s3: sns.FilterOrPolicy.policy({
-              object: sns.FilterOrPolicy.policy({
-                key: sns.FilterOrPolicy.filter(
-                  sns.SubscriptionFilter.stringFilter({
-                    matchPrefixes: ["image"],
-                  })
-                ),
-              }),
-            }),
-           }),
-         },
-        rawMessageDelivery: true,
-      })
- );
+         
 
 
       newImageTopic.addSubscription(
@@ -172,19 +153,21 @@ export class EDAAppStack extends cdk.Stack {
 
     processImageFn.addEventSource(newImageEventSource);
 
-        const newImageMailEventSource = new events.SqsEventSource(mailerQ, {
-      batchSize: 5,
-      maxBatchingWindow: cdk.Duration.seconds(5),
-    }); 
+    
 
-    mailerFn.addEventSource(newImageMailEventSource);
-
-    const rejectedImageEventSource = new events.SqsEventSource(dlq, {
+   const rejectedImageEventSource = new events.SqsEventSource(dlq, {
   batchSize: 5,
   maxBatchingWindow: cdk.Duration.seconds(10),
 });
 
 rejectedImageFn.addEventSource(rejectedImageEventSource);
+
+mailerFn.addEventSource(
+  new source.DynamoEventSource(imagesTable, {
+    startingPosition: lambda.StartingPosition.LATEST
+  })
+);
+
 
     // Permissions
     imagesBucket.grantRead(processImageFn);
